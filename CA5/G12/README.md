@@ -204,7 +204,7 @@ To monitor Docker image layers and inspect the contents of an image, you can use
   ``` 
     CONTAINER ID   NAME           CPU %     MEM USAGE / LIMIT     MEM %     NET I/O       BLOCK I/O   PIDS
     1e3b3b4b5d4e   chat-server-v1  0.00%    0B / 0B               0.00%    0B / 0B      0B / 0B    0
-```
+   ```
   
 
 ### Publishing and Running Docker Images
