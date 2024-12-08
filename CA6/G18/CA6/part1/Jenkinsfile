@@ -1,0 +1,126 @@
+pipeline {
+    agent any
+
+    environment {
+        GRADLE_USER_HOME = "${WORKSPACE}/.gradle" // Set Gradle's user home
+        BUILD_VERSION = "" // Placeholder for the stable build version
+    }
+
+    stages {
+        // Stage 1: Checkout Code
+        stage('Checkout') {
+            steps {
+                echo "Checking out the latest code from the repository..."
+                git branch: 'development', url: 'https://github.com/your-repo.git'
+            }
+        }
+
+        // Stage 2: Assemble Application
+        stage('Assemble') {
+            steps {
+                echo "Building the Spring application with Gradle..."
+                sh './gradlew clean build'
+            }
+        }
+
+        // Stage 3: Test Application
+        stage('Test') {
+            steps {
+                echo "Running unit tests..."
+                sh './gradlew test'
+            }
+            post {
+                always {
+                    echo "Publishing test results..."
+                    junit 'build/test-results/**/*.xml' // Adjust the path if needed
+                }
+                success {
+                    script {
+                        BUILD_VERSION = "stable-v1.${env.BUILD_NUMBER}" // Generate stable build tag
+                    }
+                }
+            }
+        }
+
+        // Stage 4: Archive Artifacts and Tag Stable Build
+        stage('Archive and Tag Stable Build') {
+            steps {
+                echo "Archiving build artifacts and tagging as stable..."
+                archiveArtifacts artifacts: 'build/libs/*.jar', fingerprint: true
+                script {
+                    if (BUILD_VERSION) {
+                        echo "Tagging build with version: ${BUILD_VERSION}"
+                        sh "git tag ${BUILD_VERSION}"
+                        sh "git push origin ${BUILD_VERSION}"
+                    } else {
+                        error("Tests failed. Build cannot be tagged as stable.")
+                    }
+                }
+            }
+        }
+
+        // Stage 5: Deploy to Production?
+        stage('Deploy to Production?') {
+            steps {
+                echo "Awaiting manual approval for deployment to production..."
+                input message: "Do you want to deploy the application to production?"
+            }
+        }
+
+        // Stage 6: Deploy Application
+        stage('Deploy') {
+            steps {
+                echo "Deploying the application using Ansible..."
+                ansiblePlaybook playbook: 'provision.yml', inventory: 'inventory', extraVars: [
+                    app_host: 'green'
+                ]
+            }
+        }
+
+        // Stage 7: Deployment Verification
+        stage('Deployment Verification') {
+            steps {
+                echo "Verifying the application is running in production..."
+                script {
+                    def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' http://192.168.57.10:8080", returnStdout: true)
+                    if (response != "200") {
+                        error("Deployment verification failed! Application is not accessible.")
+                    } else {
+                        echo "Deployment verification passed! Application is accessible."
+                    }
+                }
+            }
+        }
+
+          // Stage 8: Rollback (if necessary)
+        stage('Rollback') {
+            when {
+                expression {
+                    // Only trigger rollback manually or based on failure conditions
+                    currentBuild.result == 'FAILURE' || input(message: "Trigger rollback to a stable version?", parameters: [string(name: 'ROLLBACK_VERSION', defaultValue: 'stable-v1.0', 
+                    description: 'Enter version')])
+                }
+            }
+            steps {
+                echo "Rolling back to stable version..."
+                ansiblePlaybook playbook: 'rollback.yml', inventory: 'inventory', extraVars: [
+                    ROLLBACK_VERSION: "${ROLLBACK_VERSION}"
+                ]
+            }
+        }
+        
+    }
+
+    post {
+        always {
+            echo "Pipeline execution completed."
+        }
+        success {
+            echo "Pipeline executed successfully!"
+            echo "Stable build version: ${BUILD_VERSION}"
+        }
+        failure {
+            echo "Pipeline failed."
+        }
+    }
+}

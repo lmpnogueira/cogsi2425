@@ -1,0 +1,150 @@
+---
+- name: Provision App + Database Server
+  hosts: app-db-server
+  become: yes
+  vars:
+    # H2 Database Variables
+    h2_version: "2.1.214"
+    h2_install_dir: "/opt/h2"
+    h2_jar_path: "/opt/h2/h2.jar"
+    
+    # Spring Application Variables
+    GITHUB_SSH_KEY: /home/vagrant/app_data/vagrant_ssh_key
+    GRADLE_USER_HOME: /home/vagrant/.gradle
+
+  tasks:
+    # Common Setup Tasks
+    - name: Install necessary packages (Git, Java, Gradle)
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - git
+        - openjdk-17-jdk
+        - gradle
+        - curl
+        - wget
+        - unzip
+
+    # H2 Database Setup Tasks
+    - name: Create H2 installation directory
+      file:
+        path: "{{ h2_install_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download H2 database jar
+      get_url:
+        url: "https://repo1.maven.org/maven2/com/h2database/h2/{{ h2_version }}/h2-{{ h2_version }}.jar"
+        dest: "{{ h2_jar_path }}"
+        mode: '0755'
+      register: download_result
+      failed_when: download_result.status_code != 200
+      ignore_errors: yes
+
+    - name: Create systemd service file for H2
+      copy:
+        dest: /etc/systemd/system/h2.service
+        content: |
+          [Unit]
+          Description=H2 Database
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/bin/java -cp {{ h2_jar_path }} org.h2.tools.Server -tcp -tcpAllowOthers -web -webAllowOthers
+          WorkingDirectory={{ h2_install_dir }}
+          User=root
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Reload systemd to recognize new H2 service
+      command: systemctl daemon-reload
+
+    - name: Enable and start H2 service
+      systemd:
+        name: h2
+        enabled: true
+        state: started
+
+    # Spring Application Setup Tasks
+    - name: Create SSH directory if it doesn't exist
+      file:
+        path: /home/vagrant/.ssh
+        state: directory
+        mode: '0700'
+
+    - name: Check if the GitHub SSH key file exists
+      stat:
+        path: "{{ GITHUB_SSH_KEY }}"
+      register: ssh_key_check
+
+    - name: Fail if SSH key does not exist
+      fail:
+        msg: "GitHub SSH key not found at {{ GITHUB_SSH_KEY }}. Please ensure the key is present on the target server."
+      when: not ssh_key_check.stat.exists
+
+    - name: Set up GitHub SSH key configuration
+      copy:
+        content: |
+          Host github.com
+            IdentityFile {{ GITHUB_SSH_KEY }}
+            StrictHostKeyChecking no
+        dest: /home/vagrant/.ssh/config
+        mode: '0600'
+
+    - name: Remove the existing app directory if it exists
+      file:
+        path: /home/vagrant/app
+        state: absent
+
+    - name: Clone the repository
+      git:
+        repo: "git@github.com:Bruno-Freitas-1171242/cogsi2425-1171242-1230177-1230163.git"
+        dest: /home/vagrant/app
+        key_file: "{{ GITHUB_SSH_KEY }}"
+        update: yes
+
+    - name: Set executable permission on gradlew
+      file:
+        path: /home/vagrant/app/CA2/part2/gradlew
+        mode: '0755'
+
+    - name: Ensure vagrant owns all files in the app directory
+      command: chown -R vagrant:vagrant /home/vagrant/app
+
+    - name: Set GRADLE_USER_HOME environment variable and build the application
+      shell: |
+        export GRADLE_USER_HOME={{ GRADLE_USER_HOME }}
+        cd /home/vagrant/app/CA2/part2
+        ./gradlew build
+        nohup ./gradlew bootRun > /home/vagrant/app.log 2>&1 &
+      args:
+        executable: /bin/bash
+      become_user: vagrant
+      register: build_result
+      failed_when: "'BUILD FAILED' in build_result.stderr"
+      ignore_errors: true
+
+    # Validation Tasks
+    - name: Confirm H2 is running
+      shell: "curl -s http://localhost:8082"
+      register: h2_check
+      ignore_errors: true
+
+    - name: Confirm Application is Running
+      shell: "curl -s http://localhost:8080"
+      register: app_check
+      ignore_errors: true
+
+    - name: Show H2 status
+      debug:
+        msg: "H2 is successfully running and accessible."
+      when: h2_check.rc == 0
+
+    - name: Show Application status
+      debug:
+        msg: "Application is successfully running and accessible."
+      when: app_check.rc == 0

@@ -1,0 +1,59 @@
+- name: Rollback Application to Stable Version
+  hosts: green
+  become: yes
+  vars:
+    jenkins_url: "http://jenkins-server:8080"
+    jenkins_user: "your-jenkins-username"
+    jenkins_token: "your-jenkins-api-token"
+    build_version: "{{ lookup('env', 'ROLLBACK_VERSION') }}" # Passed via Jenkins
+    artifact_path: "/var/lib/jenkins/workspace/{{ build_version }}/application.jar"
+    deployment_dir: "/opt/app"
+    service_name: "application-service"
+
+  tasks:
+    # Step 1: Fetch Artifact from Jenkins
+    - name: Retrieve stable artifact from Jenkins
+      uri:
+        url: "{{ jenkins_url }}/job/my-pipeline/lastSuccessfulBuild/artifact/{{ build_version }}/application.jar"
+        method: GET
+        user: "{{ jenkins_user }}"
+        password: "{{ jenkins_token }}"
+        force_basic_auth: yes
+        dest: "{{ deployment_dir }}/application.jar"
+      register: fetch_result
+      failed_when: fetch_result.status_code != 200
+      ignore_errors: false
+
+    # Step 2: Stop the Currently Running Application
+    - name: Stop the current application service
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+
+    # Step 3: Replace Application with Stable Version
+    - name: Replace application JAR with stable artifact
+      copy:
+        src: "{{ deployment_dir }}/application.jar"
+        dest: "{{ deployment_dir }}/application.jar"
+        mode: '0755'
+
+    # Step 4: Restart Application
+    - name: Start the application service
+      systemd:
+        name: "{{ service_name }}"
+        state: started
+
+    # Step 5: Automated Health Check
+    - name: Verify application is running
+      uri:
+        url: "http://192.168.57.10:8080"
+        method: GET
+        status_code: 200
+        validate_certs: no
+      register: health_check
+      failed_when: health_check.status != 200
+
+    # Step 6: Debug Success
+    - name: Confirm rollback success
+      debug:
+        msg: "Rollback to version {{ build_version }} completed successfully and passed health checks."

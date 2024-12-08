@@ -1,0 +1,68 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_USERNAME = credentials('docker-username')
+        DOCKER_PASSWORD = credentials('docker-password')
+        DOCKER_IMAGE = "your_dockerhub_username/rest_service"
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage('Build') {
+            steps {
+                sh './gradlew build'
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        sh './gradlew test'
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        sh './gradlew integrationTest'
+                    }
+                }
+            }
+        }
+        stage('Docker Build and Push') {
+            steps {
+                sh '''
+                   docker build -t $DOCKER_IMAGE:latest .
+                   docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD
+                   docker push $DOCKER_IMAGE:latest
+                '''
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                sshagent(['vagrant-vm-credentials']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no vagrant@<VM_IP> "
+                        docker pull $DOCKER_IMAGE:latest &&
+                        docker stop rest_service || true &&
+                        docker rm rest_service || true &&
+                        docker run -d --name rest_service -p 8080:8080 $DOCKER_IMAGE:latest
+                        "
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success {
+            echo "Pipeline executed successfully!"
+        }
+        failure {
+            echo "Pipeline failed."
+        }
+    }
+}

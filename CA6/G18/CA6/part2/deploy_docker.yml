@@ -1,0 +1,50 @@
+---
+- name: Deploy Dockerized Application
+  hosts: docker-production
+  become: yes
+  vars:
+    docker_image: "your-dockerhub-username/spring-app:latest"
+    container_name: "spring-app"
+
+  tasks:
+    # Step 1: Ensure Docker is Installed
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    # Step 2: Login to Docker Hub
+    - name: Login to Docker Hub
+      shell: docker login -u your-dockerhub-username -p your-dockerhub-password
+      register: login_result
+      failed_when: "'Login Succeeded' not in login_result.stdout"
+      ignore_errors: false
+
+    # Step 3: Stop and Remove Old Container
+    - name: Stop old application container
+      shell: docker stop {{ container_name }} || true
+
+    - name: Remove old application container
+      shell: docker rm {{ container_name }} || true
+
+    # Step 4: Pull Latest Docker Image
+    - name: Pull the latest Docker image
+      shell: docker pull {{ docker_image }}
+
+    # Step 5: Run the New Docker Container
+    - name: Run the new application container
+      shell: |
+        docker run -d \
+        --name {{ container_name }} \
+        -p 8080:8080 \
+        {{ docker_image }}
+
+    # Step 6: Verify the New Container is Running
+    - name: Verify the application container is running
+      shell: docker ps -f name={{ container_name }} --format "{{ .Status }}"
+      register: container_status
+
+    - name: Debug application container status
+      debug:
+        msg: "Application container status: {{ container_status.stdout }}"
